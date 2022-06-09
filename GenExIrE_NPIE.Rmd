@@ -1,5 +1,5 @@
 ---
-title: "General extenders in Irish Englishs"
+title: "General extenders in Irish English"
 author: "Anonymous"
 date: "`r format(Sys.time(), '%Y-%m-%d')`"
 output:
