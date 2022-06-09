@@ -1,0 +1,935 @@
+---
+title: "General extenders in Irish Englishs"
+author: "Anonymous"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output:
+  bookdown::html_document2: default
+bibliography: bibliography.bib
+link-citations: yes
+---
+
+# Introducion
+
+This document shows an analysis of general extenders in Irish English based on the Irish component of the International Corpus of English (ICE). 
+
+# Preparation
+
+Install packages
+
+```{r prep01, eval = F, message=F, warning=F}
+install.packages("tidyverse")
+install.packages("quanteda")
+install.packages("readtext")
+install.packages("plyr")
+install.packages("Boruta")
+install.packages("ggparty")
+install.packages("party")
+install.packages("partykit")
+install.packages("partykit")
+```
+
+Load packages
+
+Set options
+
+Define paths to corpus and biodata
+
+```{r prep02, message=F, warning=F}
+# load packages
+library(tidyverse)
+library(quanteda)
+library(readtext)
+library(here)
+# set options
+options(stringsAsFactors = F)                           
+options(scipen = 999) 
+options(max.print=10000)
+# define image directory
+imageDirectory<-"images"   
+# specify paths
+cpath <- "D:\\Uni\\Korpora\\Original\\ICE Ireland version 1.2.2\\ICE-Ireland txt\\ICE spoken running txt"
+biopath <- "D:\\Uni\\Korpora\\Metadata/BiodataIceIreland.txt"
+```
+
+# Preprocessing
+
+Create vector of corpus files.
+
+```{r genex0101, message=FALSE, warning=FALSE}
+# load corpus files
+cfiles = list.files(path = cpath, all.files = T,
+                          full.names = T, recursive = T, ignore.case = T,
+                          include.dirs = T)
+# inspect files
+length(cfiles); head(cfiles)
+```
+
+Load corpus 
+
+```{r genex0102, message=FALSE, warning=FALSE}
+# load corpus
+cire <- readtext::readtext(cfiles) %>%
+  dplyr::mutate(doc_id = stringr::str_remove_all(doc_id, " .*"),
+                text = stringr::str_squish(text),
+                text = stringr::str_trim(text, side = "both"))
+# inspect data
+str(cire);head(cire)
+```
+
+# Processing
+
+Split corpus into speakers and speechunits.
+
+```{r genex0103, message=FALSE, warning=FALSE}
+# create vector with number of speech units
+idx <- stringr::str_count(cire$text, "<S[12][AB]")
+# create vector of files that matches the number of speech units
+fnames <- rep(cire$doc_id, idx)
+# extract speech units
+sup <- stringr::str_split(stringr::str_replace_all(cire$text, "(<S[12][AB])", "~~~\\1"), "~~~") %>%
+  unlist() %>%
+  stringr::str_subset(".+")
+# combine file names and speech units in a data frame
+ciredf <- data.frame(fnames, sup)
+# inspect
+head(ciredf)
+```
+
+Adding speaker
+
+```{r genex0104, message=FALSE, warning=FALSE}
+ciredf %>%
+  dplyr::mutate(speaker = stringr::str_remove_all(sup, ">.*")) %>%
+  dplyr::mutate(speaker = stringr::str_remove_all(speaker, ".*\\$")) %>%
+  dplyr::filter(nchar(speaker) < 3) -> ciredf
+# inspect
+head(ciredf)
+```
+
+Split further into speech units
+
+```{r genex0105, message=FALSE, warning=FALSE}
+# extract speech units
+su <- ciredf$sup %>%
+  stringr::str_remove_all("<S[12][AB]-[0-9]{3,3}\\$\\?{0,1}[A-Z]{1,2}\\?{0,1}>") %>%
+  stringr::str_squish() %>%
+  stringr::str_split("<\\#>")
+# extract length of speech units per sup
+idx2 <- sapply(su, function(x) length(x))
+# create vector of file names matching number of su 
+file <- rep(ciredf$fnames, idx2)
+# create vector of speakers matching number of su
+speaker <- rep(ciredf$speaker, idx2)
+# combine file names and speech units in a data frame
+ire <- data.frame(file, speaker, unlist(su)) %>%
+  dplyr::rename(su = colnames(.)[3]) %>%
+  dplyr::filter(nchar(su) > 1) %>%
+  dplyr::mutate(su_clean = stringr::str_remove_all(su, "<&> .*? </&>"),
+                su_clean = stringr::str_remove_all(su_clean, "<unclear> .*? </unclear>"),
+                su_clean = tolower(su_clean),
+                su_clean = stringr::str_remove_all(su_clean, "[^[:alpha:]\\' ]"),
+                id = 1:nrow(.)) %>%
+  dplyr::rowwise() %>%
+  dplyr::mutate(wordsunit = stringr::str_count(su_clean, "\\w+"))
+# save data to disc
+write.table(ire, here::here("tables", "iceraw.txt"), 
+            sep = "\t", row.names = F, col.names = T)
+# inspect
+head(ire, 10)
+```
+
+## Biodata
+
+Load biodata.
+
+```{r genex0106, message=FALSE, warning=FALSE}
+# read in data
+bio <- read.table(biopath, sep = "\t", header=TRUE)
+# clean file for joining
+bio <- bio %>%
+  dplyr::rename(File = text.id,
+                Speaker = spk.ref,
+                FileSpeakerId = file.speaker.id,
+                DateOfRecording = date,
+                Gender = sex,
+                Age = age,
+                SpeechUnits = speech.unit.count,
+                Words = word.count,
+                ReligiousAffiliation = relig,
+                Occupation = occupation,
+                Education = ed.lev,
+                ChildhoodCounty = prov,
+                ResidenceType = reside,
+                Region = zone) %>%
+  dplyr::select(-orig.id, -subfile, -spk.id, -title, -X1st.lg, -other.lgs) %>%
+  dplyr::mutate(texttype = stringr::str_remove_all(File, "-.*"))
+# inspect biodata
+head(bio)
+```
+
+Clean biodata.
+
+```{r genex0107, message=FALSE, warning=FALSE}
+# remove speakers below the age of 18
+bio <- bio %>%
+  dplyr::filter(Age != "0-18") %>%
+  # recode age
+  dplyr::mutate(Age = ifelse(Age == "34-41", "34-49",
+         ifelse(Age == "42-49", "34-49", Age))) %>%
+  # clean education
+  dplyr::mutate(Education = str_replace_all(Education, ".*doctoral degree.*",
+                                            "College")) %>%
+  dplyr::mutate(Education = str_replace_all(Education, 
+                                            ".*first degree.*", "College")) %>%
+  dplyr::mutate(Education = str_replace_all(Education, 
+                                            ".*non-degree tertiary qualification.*", "College")) %>%
+  dplyr::mutate(Education = str_replace_all(Education, 
+                                            ".*postgraduate qualification.*",
+                                            "College")) %>%
+  dplyr::mutate(Education = str_replace_all(Education, 
+                                            ".*some tertiary education.*", 
+                                            "College")) %>%
+  dplyr::mutate(Education = str_replace_all(Education, 
+                                            ".*primary education.*", 
+                                            "NoCollege")) %>%
+  dplyr::mutate(Education = str_replace_all(Education, 
+                                            ".*secondary school qualification.*",
+                                            "NoCollege")) %>%
+  dplyr::mutate(Education = str_replace_all(Education, 
+                                            ".*some secondary education.*",
+                                            "NoCollege"))
+# inspect data
+table(bio$Education); table(bio$Age)
+```
+
+Recode ResidenceType
+
+```{r genex0108, message=FALSE, warning=FALSE}
+# recode ResidenceType
+Urban <- c("cork (city)", "belfast", "dublin (city)")
+Rural <- c("antrim", "armagh", "cork (county)", "down", 
+           "dublin (county)", "kerry", "kildare", "limerick", 
+           "(london)derry", "mayo", "meath", 
+           "sligo", "tipperary", "tyrone", "wicklow")
+bio <- bio %>%
+  dplyr::mutate(ResidenceType = ifelse(ResidenceType %in% Urban, "Urban", 
+                               ifelse(ResidenceType %in% Rural, "Rural", NA)))
+# inspect data
+table(bio$ResidenceType)
+```
+
+Recode ReligiousAffiliation
+
+```{r genex0109, message=FALSE, warning=FALSE}
+# recode ResidenceType
+bio <- bio %>%
+  dplyr::mutate(ReligiousAffiliation = ifelse(ReligiousAffiliation == "catholic",
+                                              "Catholic",
+                               ifelse(ReligiousAffiliation == "protestant",
+                                      "Protestant", NA)))
+# inspect data
+table(bio$ReligiousAffiliation)
+```
+
+
+Recode Region
+
+```{r genex0110, message=FALSE, warning=FALSE}
+# recode ResidenceType
+bio <- bio %>%
+  dplyr::mutate(Region = dplyr::case_when(Region == "northern ireland" ~ "NorthernIreland",
+                                          Region == "republic of ireland" ~ "RepublicOfIreland",  
+                                          Region == "mixed between ni and roi" ~  "Interstate", 
+                                          TRUE ~ as.character(NA)))
+# inspect data
+table(bio$Region)
+```
+
+Recode ChildhoodCounty
+
+```{r genex0111, message=FALSE, warning=FALSE}
+# recode ChildhoodCounty
+North <- c("antrim", "armagh", "belfast", "(london)derry", "down", "tyrone")
+South <- c("cork (city)",  "cork (county)", "dublin (city)", 
+           "dublin (county)", "kerry", "kildare", "limerick", "mayo", "meath", 
+           "sligo", "tipperary", "wicklow")
+bio <- bio %>%
+  dplyr::mutate(ChildhoodCounty = dplyr::case_when(ChildhoodCounty %in% North ~ "North",
+                                                   ChildhoodCounty %in% South ~ "South", 
+                                                   TRUE ~ as.character(NA)))
+# inspect data
+table(bio$ChildhoodCounty)
+```
+
+```{r genex0112, message=FALSE, warning=FALSE}
+# recode occupation
+# Academic, clerical, managerial professions
+acmp <- c("accountant", "administrator", "apprentice barrister", 
+          "artist typist", "author", "author journalist", "bank clerk", 
+          "bank manager", "bank official", "bank official lecturer", 
+          "banker", "barrister", "bbc production assistant",
+          "bifhe tutor", "biochemist", "bishop", "broadcast journalist",
+          "broadcast reporter", "broadcaster", "broadcaster cooking school owner",
+          "broadcaster director",
+          "broadcaster journalist", "broadcaster journalist writer", 
+          "broadcaster producer",
+          "building society executive", "businesswoman", "catholic priest", "ceo",
+          "chief auditor of ehsesb", "chief executive", "civil servant",
+          "classroom assistant",
+          "clerical officer", "college administrator", "college president",
+          "commission chairman", "company director", 
+          "company director politician",
+          "company director sports com", "company representative", 
+          "computer technician",
+          "consultant", "court clerk", "credit union official", "curate",
+          "department store manager", "deputy editor", "designer", 
+          "diplomat politician",
+          "doctor", "domestic economist", "economist politician", 
+          "employment coordinator",
+          "engineer", "environmental health officer", "estate agent",
+          "executive director unicef irl", "financial advisor", 
+          "financier author",
+          "football manager", "former gaa hurler student", "former town clerk",
+          "fun park owner", "general practitioner", "graphic designer",
+          "health employers official", "high court judge", 
+          "hotelier sports commentator",
+          "investment analyst", "it analyst", "journalist", 
+          "journalist  broadcaster",
+          "journalist author", "journalist broadcaster", 
+          "journalist community worker",
+          "journalist producer", "journalist writer", "judge", 
+          "lecturer", "lecturer musician",
+          "lecturer security analyst", "legal secretary", "letting agent",
+          "lord mayor politician", "management consultant", "manager", 
+          "manager social worker",
+          "marketing", "marketing assistant", "marketing consultant", 
+          "marketing manager",
+          "medical consultant", "medical doctor", "medical journal editor",
+          "methodist minister",
+          "minister of religion", "musician", "musician singer", 
+          "news reporter", "newscaster",
+          "newsreader", "newsreporter", "pastor community leader", 
+          "pg student", "physicist",
+          "physiotherapist student", "police superintendent", "politician",
+          "politician academic", "politician accountant", "politician architect",
+          "politician barrister", "politician barrister accountant",
+          "politician business executive", "politician company director",
+          "politician economist", "politician executive", "politician historian",
+          "politician lecturer consultant", "politician minister of religion",
+          "politician psychiatrist", "politician publican", 
+          "politician secretary",
+          "politician solicitor", "politician teacher", 
+          "politician trade union official",
+          "practice manager", "presbyterian minister", 
+          "presbyterian moderator", "priest",
+          "priest journalist", "priest lecturer", "priest teacher", 
+          "professor",
+          "professor composer", "programme manager trocaire", 
+          "property developer politician",
+          "public relations officer", "publican", "radio presenter",
+          "radio producer writer teacher", "registrar", 
+          "rep for chemical company",
+          "reporter", "research assistant", "researcher", "retired accountant",
+          "retired bishop", "retired broadcaster writer", "retired civil servant",
+          "retired general secretary gra", "retired presbyterian minister",
+          "retired social worker", "sales manager", "secretary student",
+          "senior counsel lecturer", "senior legal assistant", 
+          "senior systems analyst",
+          "singer", "solicitor", "solicitor politician", 
+          "speech & language therapist",
+          "sports commentator", "sports commentator teacher", "sports official",
+          "sports reporter", "student", "student hockey player", 
+          "student union officer",
+          "surgeon", "systems analyst", "teacher", "teacher politician",
+          "television journalist", "television painting expert", 
+          "television presenter",
+          "television producer ski instructor", "tourist board employee",
+          "trade union official", "trade union representative", 
+          "trainee solicitor", "travel advisor",
+          "vp of primary school", "weather reporter", "writer", 
+          "writer broadcaster")
+# Skilled Manual Labour
+sml <- c("athlete", "staff nurse", "waitress", "ward assistant", 
+         "social worker",
+         "socialworker", "building company employee", "bus driver", 
+         "captain of fishing boat",
+         "retail manageress", "shop employee", "retired social worker", 
+         "care assistant",
+         "community worker", "racing commentator", "receiver", 
+         "receptionist", "farm manager",
+         "farmer", "farmer politician", "politician stonemason", 
+         "fire officer", "fisherman",
+         "fishwife", "fitness instructor", "footballer", "former gaa footballer",
+         "furniture store employee", "former road sweeper", 
+         "horticulturist", "nanny",
+         "nurse", "nurse student", "peat bog owner", "police officer")
+# unclassifiable
+NAN <- c("retired", "employed", "housewife", "na")
+# reclassify
+bio <- bio %>%
+  dplyr::mutate(Occupation = dplyr::case_when(Occupation %in% acmp ~ "AcademicManagerialProfessions",
+                                               Occupation %in% sml ~ "SkilledManualLabour", 
+                                                   TRUE ~ as.character(NA)))
+# inspect data
+table(bio$Occupation)
+```
+
+AudienceSize
+
+```{r genex0113, message=FALSE, warning=FALSE}
+bio <- bio %>%
+  dplyr::group_by(File) %>%
+  dplyr::mutate(AudienceSize = length(table(Speaker))) %>%
+  dplyr::mutate(AudienceSize = dplyr::case_when(AudienceSize <= 2 ~ "Dyad",
+                                                AudienceSize >= 6 ~ "LargeGroup",
+                                                TRUE ~ "SmallGroup"))
+# inspect data
+table(bio$AudienceSize)
+```
+ConversationType
+
+```{r genex0114, message=FALSE, warning=FALSE}
+bio <- bio %>%
+  dplyr::group_by(File) %>%
+  dplyr::mutate(ConversationType = sum(ifelse(table(Gender) > 0, 1, 0))) %>%
+  dplyr::mutate(ConversationType = dplyr::case_when(ConversationType == 1 ~ "SameGender",
+                                          TRUE ~ "MixedGender"))
+# inspect data
+table(bio$ConversationType)
+```
+
+# Combine Corpus and Biodata
+
+
+```{r genex0115, message=FALSE, warning=FALSE}
+colnames(ire) <- stringr::str_to_title(colnames(ire))
+# merge
+ire <- dplyr::left_join(ire, bio, by = c("File", "Speaker")) %>%
+  dplyr::mutate(Su = stringr::str_squish(Su),
+                Su_clean = stringr::str_squish(Su_clean)) %>%
+  dplyr::select(-id)
+# save data to disc
+write.table(ire, here::here("tables", "ice.txt"), 
+            sep = "\t", row.names = F, col.names = T)
+# inspect
+head(ire)
+```
+
+
+# Combine kwics with corpus and biodata
+
+Extract general extenders
+
+```{r genex0116, message=FALSE, warning=FALSE}
+# define regular expression
+regex <-  "(sort|sorts) of (stuff|shit)|(\\betc\bb|etcetera etcetera|etcetera|et cetera)|(and|or) (this|that){0,4} {0,1}(whatever|so on|so forth|all|something|everything|thing|things|stuff|shit) {0,1}(else|like){0,4} {0,1}(this|that|these|those){0,5}"
+```
+
+
+
+```{r genex0118, message=FALSE, warning=FALSE}
+ge2 <- stringr::str_extract_all(ire$Su_clean, regex)
+# extract number of genex for each su
+ire$ngenex <- sapply(ge2, function(x) length(x))
+# inspect
+head(ire, 10)
+```
+
+split speech units so that all units containing 2 or more GEs are split into two speech unit 
+
+```{r genex0119, message=FALSE, warning=FALSE}
+splitsu <- ifelse(ire$ngenex > 1, stringr::str_split(str_replace(ire$Su_clean, (regex), "\\1~~~"), "~~~"), ire$Su_clean) %>%
+  unlist()
+```
+
+chec with speech units still contain more than 1 GE
+
+```{r genex0120, message=FALSE, warning=FALSE}
+# now check which split units still contain more than one GE
+ge3 <- stringr::str_extract_all(splitsu, regex)
+# extract number of genex for each su
+nge3 <- sapply(ge3, function(x) length(x))
+```
+
+repeat splitting until each speech unit only contains a maximum of 1 GE
+
+```{r genex0121, message=FALSE, warning=FALSE}
+# repeat split so that each su only conatins max 1 ge
+splitsu <- ifelse(nge3 > 1, stringr::str_split(str_replace(splitsu, (regex), "\\1~~~"), "~~~"), splitsu) %>%
+  unlist()
+```
+
+repeat all rows in the data so that the split speech units can be added again aligning correctly with the metadata of the speech unit
+
+```{r genex0125, message=FALSE, warning=FALSE}
+# repeat rows
+reps <- ifelse(ire$ngenex == 0, 1, ire$ngenex)
+ireb <- ire[rep(1:nrow(ire), reps), ]
+# add splitsu
+ireb$nsu <- splitsu
+# extract general extenders
+gxtb <- stringr::str_extract_all(ireb$nsu, regex)
+# create vector of forms
+gxs <- sapply(gxtb, function(x) ifelse(length(x) == 0, "0", x))
+# add to table
+ireb$gx <- gxs 
+ireb <- ireb %>%
+  # update ngx
+  dplyr::mutate(ngenex = ifelse(gx == "0", 0, 1),
+                gx = stringr::str_squish(gx),
+                Speaker = stringr::str_remove_all(Speaker, "\\?")) %>%
+  dplyr::filter(Speaker != "X",
+                Speaker != "")
+# save data to disc
+write.table(ireb, here::here("tables", "ice_prefinal.txt"),
+            sep = "\t", row.names = F, col.names = T)
+# inspect 
+head(ireb)
+```
+
+Check
+
+```{r}
+ireb %>%
+  dplyr::filter(gx == "etcetera") %>%
+  dplyr::select(nsu) %>%
+  head(10)
+```
+
+
+## Overview{-}
+
+ create table showing how often each GE occurred in the data
+
+
+
+```{r genex0126, message=FALSE, warning=FALSE}
+genex <- ge3 %>%
+  unlist() %>%
+  stringr::str_squish() %>%
+  table() %>%
+  as.tibble() %>%
+  dplyr::rename(genex = 1) %>%
+  dplyr::mutate(genex = stringr::str_squish(genex))
+# inspect
+genex
+
+```
+
+visualize overview
+
+
+```{r genex0153, message=FALSE, warning=FALSE}
+genex %>%
+  dplyr::arrange(-n) %>%
+  ggplot(aes(x = reorder(genex, -n), y = n, label = n)) +
+  geom_bar(stat = "identity") +
+  geom_text(vjust=-1.2, color = "gray30", size = 3.5) +
+  labs(x = "", y = "Frequency") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=90)) +
+  coord_cartesian(y = c(0, 200))
+# save plot
+ggsave(here::here("images", "ngenex.png"), unit = "cm", width = 25)
+```
+
+
+```{r}
+clps <- genex %>%
+  dplyr::filter(n < 5) %>%
+  dplyr::pull(genex)
+# inspect
+clps
+```
+
+
+
+```{r genex0150, message=FALSE, warning=FALSE}
+gx_genre <- ireb %>%
+  dplyr::filter(gx != "0") %>%
+  dplyr::mutate(gx = ifelse(gx %in% clps, "other", gx)) %>%
+  dplyr::group_by(Age, texttype, gx) %>%
+  dplyr::summarise(freq = n()) %>%
+  dplyr::ungroup() %>%
+  dplyr::rename(Genre = texttype,
+                GeneralExtender = gx,
+                Frequency = freq) %>%
+  dplyr::arrange(-Frequency) %>%
+  ggplot(aes(x = reorder(GeneralExtender, -Frequency), y = Frequency, label = Frequency)) +
+  geom_bar(stat = "identity") +
+  geom_text(vjust=-1.2, color = "gray30", size = 3.5) +
+    facet_grid(vars(Genre)) +
+  labs(x = "", y = "Frequency") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=90)) +
+  coord_cartesian(y = c(0, 200))
+# inspect
+gx_genre
+# save plot
+ggsave(here::here("images", "ngx_tt.png"), unit = "cm", width = 25)
+```
+
+
+```{r genex0151, message=FALSE, warning=FALSE}
+ireb %>%
+  dplyr::filter(gx != "0") %>%
+  dplyr::mutate(gx = ifelse(gx %in% clps, "other", gx)) %>%
+  dplyr::group_by(Age, texttype, gx) %>%
+  dplyr::summarise(freq = n()) %>%
+  dplyr::ungroup() %>%
+  dplyr::rename(Genre = texttype,
+                GeneralExtender = gx,
+                Frequency = freq) %>%
+  dplyr::arrange(-Frequency) %>%
+  ggplot(aes(x = reorder(GeneralExtender, -Frequency), y = Frequency, label = Frequency)) +
+  geom_bar(stat = "identity") +
+  geom_text(vjust=-1.2, color = "gray30", size = 3.5) +
+    facet_grid(vars(Age)) +
+  labs(x = "", y = "Frequency") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=90)) +
+  coord_cartesian(y = c(0, 200))
+# save plot
+ggsave(here::here("images", "ngx_age.png"), unit = "cm", width = 25)
+```
+
+# Simplfy data for analysis
+
+extract vector of rare GEs
+
+```{r genex0128, message=FALSE, warning=FALSE}
+freq_ges <- names(table(ireb$gx))[which(table(ireb$gx) > 40)] %>%
+  stringr::str_squish()
+# inspect
+freq_ges
+```
+
+
+```{r genex0130, message=FALSE, warning=FALSE}
+irec <- ireb %>%
+  dplyr::mutate(ges = dplyr::case_when(gx == "0" ~ "0",
+                                       gx %in% freq_ges ~ gx, 
+                                       TRUE ~ "other"))
+# save data to disc
+write.table(irec, here::here("tables", "ice_prestats.txt"),
+            sep = "\t", row.names = F, col.names = T)
+# inspect
+head(irec)
+```
+
+
+
+
+
+# Statistical Analysis
+
+load packages
+
+
+```{r}
+library(Boruta)
+library(ggparty)
+library(party)
+library(partykit)
+library(cfa)
+```
+
+
+
+Prepare data
+
+```{r genex0161, message=FALSE, warning=FALSE}
+# create vector of variables to keep
+keep <-c("File", "Speaker", "Id", "Wordsunit",  "Region", "DateOfRecording", 
+         "Gender", "Age", "ChildhoodCounty", "ResidenceType", "Education", 
+         "Occupation", "ReligiousAffiliation", "texttype", "AudienceSize", 
+         "ConversationType", "ngenex",  "gx", "ges")
+# simplify data
+dstat <- irec %>%
+  dplyr::select(keep) %>%
+  dplyr::rename(nge = ngenex,
+                ge = gx) %>%
+  dplyr::mutate(texttype = dplyr::case_when(texttype == "S1A" ~ "Private",
+                                            texttype == "S1B" ~ "Public",
+                                            texttype == "S2A" ~ "Scripted",
+                                            texttype == "S2B" ~ "Unscripted",
+                                            TRUE ~ "other"),
+                texttype = factor(texttype, 
+                                  levels = c("Private", "Public", 
+                                             "Unscripted",  "Scripted")),
+                Age = factor(Age, levels = c("19-25", "26-33", "34-49", "50+"))) %>%
+  dplyr::mutate_if(is.character, factor)
+# inspect
+head(dstat)
+```
+
+## Data Vis
+
+```{r}
+dstat %>%
+  dplyr::select(Age, texttype, ges, nge, Wordsunit) %>%
+  dplyr::group_by(Age, texttype, ges) %>%
+  summarise(words = sum(Wordsunit),
+            ns = sum(nge),
+            freq = round(ns/words *1000, 3)) %>%
+  dplyr::ungroup() %>%
+  dplyr::filter(ges != "0") %>%
+  dplyr::rename(Variant = ges) %>%
+  na.omit() %>%
+  ggplot(aes(x = Age, y = freq, group = Variant, color = Variant)) +
+  facet_wrap(~texttype, ncol = 1) +
+  geom_line() +
+  theme_bw() +
+  labs(y = "Relative Frequency (mean per 1,000 words)")
+ggsave(here::here("images", "ge_age_tt.png"), unit = "cm", width = 15)
+```
+
+
+```{r}
+dstat %>%
+  dplyr::select(Age, ge) %>%
+  dplyr::mutate(Variant = dplyr::case_when(str_detect(ge, "stuff") ~ "stuff",
+                                         str_detect(ge, "shit") ~ "shit",
+                                         str_detect(ge, "thing") ~ "thing",
+                                         TRUE ~ "other")) %>%
+  dplyr::filter(Variant != "other") %>%
+  dplyr::group_by(Age, Variant) %>%
+  summarise(Frequency = n()) %>%
+  dplyr::ungroup() %>%
+  na.omit() %>%
+  ggplot(aes(x = Age, y = Frequency, group = Variant, fill = Variant)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  theme_bw() +
+  geom_text(aes(y = Frequency + 5, label = Frequency), 
+            color = "gray20", position = position_dodge(0.9), size=3) +
+  scale_fill_grey() +
+  theme(legend.position = "top")
+ggsave(here::here("images", "ge_age_stuff.png"), unit = "cm", width = 10)
+```
+
+
+
+## Bortuta
+
+Prepare data
+
+```{r}
+citdata <- dstat %>%
+  dplyr::rename(Texttype = texttype,
+                Occurrence = nge,
+                GeneralExtender = ge,
+                Variant = ges) %>%
+  dplyr::filter(Variant != "0") %>%
+  dplyr::mutate(FileSpeaker = paste0(File, "$", Speaker, sep = "")) %>%
+  dplyr::select(-Id, -Wordsunit, -GeneralExtender, -File, -Speaker, 
+                -Occurrence, -ChildhoodCounty, -Occupation) %>%
+  dplyr::mutate(Variant = droplevels.factor(Variant),
+      Region = dplyr::case_when(Region == "NorthernIreland" ~ "NI",
+                                Region == "RepublicOfIreland" ~ "RoI",
+                                Region == "Interstate" ~ "Mixed",
+                                TRUE ~ "NA")) %>%
+  dplyr::mutate_if(is.character, factor) %>%
+  dplyr::filter(Texttype == "Private")
+# inspect
+head(citdata)
+```
+
+
+```{r}
+check <- citdata[complete.cases(citdata),]
+nrow(citdata); nrow(check)
+
+# checks
+sum(table(citdata$Region))
+sum(table(citdata$DateOfRecording)) # problem
+sum(table(citdata$Gender))
+sum(table(citdata$Age))
+sum(table(citdata$ResidenceType)) # problem
+sum(table(citdata$Education)) # problem
+sum(table(citdata$ReligiousAffiliation)) # problem
+sum(table(citdata$Texttype))
+sum(table(citdata$AudienceSize))
+sum(table(citdata$ConversationType))
+sum(table(citdata$Variant))
+sum(table(citdata$FileSpeaker))
+```
+
+```{r}
+citdata <- citdata %>%
+  dplyr::select(-DateOfRecording, -ResidenceType, -Education, 
+                -ReligiousAffiliation, -Texttype) %>%
+  na.omit(.)
+# inspect
+nrow(citdata) 
+```
+
+
+```{r}
+# set.seed 
+set.seed(2019120207)
+# initial run
+boruta1 <- Boruta(Variant ~., data=citdata)
+print(boruta1)
+```
+
+```{r}
+# extract decision
+getConfirmedFormula(boruta1)
+```
+
+
+```{r}
+plotImpHistory(boruta1)
+```
+
+
+
+
+## CIT
+
+
+Perform CIT analysis
+
+
+```{r}
+set.seed(111)        # set.seed
+# apply bonferroni correction (1 minus alpha multiplied by n of predictors)
+control = ctree_control(mincriterion = 1-(.05*ncol(citdata)-1))
+# create initial conditional inference tree model
+citd.ctree <- partykit::ctree(Variant ~ Region + Gender + Age + AudienceSize,
+                    data = citdata)
+plot(citd.ctree, gp = gpar(fontsize = 8)) # plot final ctree
+```
+
+save plot
+
+```{r}
+png(here::here("images", "cit_base.png"), width = 1200)
+plot(citd.ctree, gp = gpar(fontsize = 14)) 
+dev.off()
+```
+
+pretty plot
+
+```{r freq, warning=F, message=F}
+# extract p-values
+pvals <- unlist(nodeapply(citd.ctree, ids = nodeids(citd.ctree), function(n) info_node(n)$p.value))
+pvals <- pvals[pvals <.05]
+# plotting
+pcit_freq <- ggparty(citd.ctree) +
+  geom_edge(size = .5, col = "gray80") +
+  geom_edge_label(size = 3) +
+  geom_node_label(line_list = list(aes(label = splitvar, size = 5),
+                                   aes(label = paste0("N=", nodesize, ", p", 
+                                                 ifelse(pvals < .001, "<.001",
+                                                   paste0("=", round(pvals, 3)))))),
+                  line_gpar = list(list(size = 8),
+                                   list(size = 8)), 
+                  ids = "inner") +
+  geom_node_label(aes(label = paste0("N = ", nodesize)),
+                  ids = "terminal", 
+                  nudge_y = 0.01, 
+                  nudge_x = 0.01, 
+                  size = 3) +
+  geom_node_plot(gglist = list(
+    geom_bar(aes(x = Variant, fill = Variant),
+             position = position_dodge(), color = "black"),
+    theme_minimal(),
+    theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          axis.text.x = element_text(angle = 90, size = 8),
+          axis.text.y = element_text(size = 8)),
+      scale_fill_manual(values = gray.colors(length(names(table(citdata$Variant)))),
+                        guide = F),
+      scale_y_continuous(breaks = seq(0, 100, 25),
+                         limits = c(0, 100)),
+    labs(x = "", y = ""),
+      geom_text(aes(x = Variant, group = Variant,
+                    label = stat(count)),
+                stat = "count",
+                size = 2, 
+                position = position_dodge(0.9), vjust = -0.7)),
+    shared_axis_labels = TRUE)
+# save plot ggsave
+ggsave(plot = pcit_freq, here::here("images", "cit_pfreq.png"), 
+       unit = "cm", width = 20, height = 15)
+# show plot
+pcit_freq
+```
+
+
+
+
+```{r}
+# extract p-values
+pvals <- unlist(nodeapply(citd.ctree, ids = nodeids(citd.ctree), function(n) info_node(n)$p.value))
+pvals <- pvals[pvals <.05]
+# plotting
+pcit_stack <- ggparty(citd.ctree) +
+  geom_edge() +
+  geom_edge_label() +
+  geom_node_label(line_list = list(aes(label = splitvar),
+                                   aes(label = paste0("N=", nodesize, ", p", 
+                                                      ifelse(pvals < .001, "<.001", paste0("=", round(pvals, 3)))), 
+                                       size = 10)),
+                  line_gpar = list(list(size = 13), 
+                                   list(size = 10)), 
+                  ids = "inner") +
+  geom_node_label(aes(label = paste0("N = ", nodesize)),
+    ids = "terminal", nudge_y = -0.0, nudge_x = 0.01) +
+  geom_node_plot(gglist = list(
+    geom_bar(aes(x = "", fill = Variant),
+             position = position_fill(), 
+             color = "black"),
+      theme_minimal(),
+      scale_fill_manual(values = gray.colors(length(table(citdata$Variant)))),
+      scale_y_continuous(breaks = c(0, 1)),
+    xlab(""), 
+    ylab("Probability"),
+    geom_text(aes(x = "", group = Variant,
+                  label = ""),
+              stat = "count", position = position_fill(), vjust = 1.1)),
+    shared_axis_labels = TRUE)
+# save plot ggsave
+ggsave(plot = pcit_stack, here::here("images", "cit_pfreq.png"), 
+       unit = "cm", width = 20, height = 15)
+# show plot
+pcit_stack
+```
+
+
+
+## CFA
+
+```{r genex0164, message=FALSE, warning=FALSE}
+# prepare data
+cfadata <- citdata %>%
+  dplyr::group_by(Region, Gender, Variant) %>%
+  dplyr::summarise(Frequency = n())
+# define configurations
+configs <- cfadata %>%
+  dplyr::select(Region, Gender, Variant)
+# define counts
+counts <- cfadata$Frequency
+# perform cfa
+cfares <- cfa(configs, counts)
+cfasig <- cfares$table %>%
+  as.data.frame() %>%
+  dplyr::filter(sig.z == T)
+# save
+write.table(cfasig, here::here("tables", "sigcfa.txt"), sep = "\t")
+# inspect
+cfasig
+```
+
+
+# Outro{-}
+
+We have reached the end of part 1 of the analysis.
+
+```{r outro}
+sessionInfo()
+```
+
+
+
